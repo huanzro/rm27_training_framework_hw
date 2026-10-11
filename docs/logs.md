@@ -171,4 +171,123 @@ board/Drivers/**      -text      ← 写在前面
         Windows 不区分大小写故当前可用,**Linux/WSL 下会链接失败**。
         需先实验确认 CubeMX 重新生成时写入哪个大小写,再决定改文件还是改工具链脚本
   - [ ] 顶层两份冗余 `CMakeLists.txt` / `CMakePresets.json` 的处理方式待定
-  - [ ] 启用 C++ 并把 `bsp/libs/modules/threads` 的源码纳入构建(阶段 2)
+  - [x] 启用 C++ 并把 `bsp/libs/modules/threads` 的源码纳入构建(阶段 2,见下)
+
+---
+
+## 2026-10-11 阶段 2:C++ 源文件纳入构建
+
+### 一、`board/CMakeLists.txt` 的改动
+
+原始骨架有三处"空位",必须一起填:
+
+| 位置 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 编译器设置 | 只有 `CMAKE_C_STANDARD 11` | 增加 `CMAKE_CXX_STANDARD 17` 与 `CMAKE_CXX_STANDARD_REQUIRED ON` |
+| 工程定义 | `project(${CMAKE_PROJECT_NAME})` | `project(${CMAKE_PROJECT_NAME} LANGUAGES C CXX ASM)` |
+| 语言启用 | `enable_language(C ASM)` | `enable_language(C CXX ASM)` |
+| 源文件 | `target_sources` 内只有注释 | 加入 8 个 `.cpp` |
+| 头文件路径 | `target_include_directories` 内只有注释 | 加入 `../bsp/include`、`../libs/include`、`../modules/include`、`../threads/include` |
+
+**为什么三处必须同时改**:`enable_language` 决定"CMake 是否知道如何调用 C++ 编译器";
+`target_sources` 决定"编译哪些文件";`target_include_directories` 决定"能否找到头文件"。
+缺第一处 → 报无法确定链接语言;缺第二处 → 没有任何 `.cpp` 参与编译;
+缺第三处 → 报 `fatal error: pid.hpp: No such file or directory`。
+
+### 二、验证:C++ 确实参与构建
+
+`cmake --preset Debug` 输出:
+
+```
+-- The CXX compiler identification is GNU 13.3.1
+-- Check for working CXX compiler: .../arm-none-eabi-g++.exe - skipped
+-- Configuring done (0.4s)
+```
+
+`build/Debug/compile_commands.json`:
+
+- **9 个 `.cpp` 编译单元**:`bsp.cpp`、`bsp_can.cpp`、`bsp_usart.cpp`、`pid.cpp`、
+  `math.cpp`、`crc.cpp`、`BMI088.cpp`、`M2006.cpp`、`DJIMotorHandler.cpp`
+- 编译命令为 **`arm-none-eabi-g++.exe -std=gnu++17`**
+
+构建树中已产出 8 个 C++ 目标文件(`BMI088.cpp.obj` 除外,原因见下):
+`bsp.cpp.obj`、`bsp_can.cpp.obj`、`bsp_usart.cpp.obj`、`crc.cpp.obj`、`math.cpp.obj`、
+`pid.cpp.obj`、`DJIMotorHandler.cpp.obj`、`M2006.cpp.obj`
+
+### 三、依赖障碍(逐个记录)
+
+把 11 个 `.cpp` 的 `#include` 全部扫过,得出依赖表:
+
+| 源文件 | 依赖 | 状态 |
+| --- | --- | --- |
+| `bsp.cpp` / `bsp_can.cpp` / `bsp_usart.cpp` | 各自的 `.hpp`(→`main.h`、`can.h`、`stm32f4xx_hal_uart.h`) | ✅ |
+| `libs/` 三个 | 仅自己的 `.hpp` 与标准库 | ✅ |
+| `DJIMotorHandler.cpp` / `M2006.cpp` | `DJIMotor.hpp`(→`pid.hpp`、`can.h`) | ✅ |
+| `bsp_pwm.cpp` | `bsp_pwm.hpp` 内 `#include "tim.h"` | ❌ **`tim.h` 不存在**(TIM1/TIM10 未配置) |
+| `BMI088.cpp` | 第 2 行 `#include "tx_api.h"` | ❌ **ThreadX 未安装** |
+| `alivethread.cpp` | —— | 0 字节,尚未编写 |
+
+**`BMI088.cpp` 的确切报错**(从 `compile_commands.json` 提取命令单独编译得到):
+
+```
+modules/src/BMI088.cpp:2:10: fatal error: tx_api.h: No such file or directory
+    2 | #include "tx_api.h"
+      |          ^~~~~~~~~~
+compilation terminated.
+```
+
+**处理**:在 `target_sources` 中**注释掉** `BMI088.cpp`,注释里写明原因与恢复条件。
+原则:**仓库必须始终停留在"能编译"的状态**,一次只引入一个变化,便于定位问题。
+
+### 四、环境问题:完整 ninja 构建在本机极慢
+
+**现象**:`cmake --build --preset Debug` 多次超过 10 分钟未完成,而
+`cmake` 与 `ninja` 进程的 CPU 时间仅 **0.078 秒 / 0.156 秒** —— 处于 I/O 阻塞而非计算。
+
+**推断**:疑似实时防病毒扫描每个构建产物(`.o`/`.obj`)。非代码问题。
+
+**应对**:验证单个源文件时不必等完整构建。`build/Debug/compile_commands.json`
+记录了每个文件**完整的**编译命令(编译器、全部 `-I`、全部 `-D`),取出对应条目直接执行,
+**1~2 秒**即可得到与 ninja 一致的结果:
+
+```powershell
+$cc = Get-Content board\build\Debug\compile_commands.json -Raw | ConvertFrom-Json
+$e  = $cc | Where-Object { (Split-Path $_.file -Leaf) -eq 'BMI088.cpp' }
+Set-Location $e.directory
+cmd /c $e.command
+```
+
+**注意**:本机 PowerShell 执行策略禁止运行 `.ps1`(报
+`UnauthorizedAccess ... about_Execution_Policies`),脚本须用
+`powershell -ExecutionPolicy Bypass -File <脚本>` 调用。
+
+### 五、本阶段等级与后续依赖链
+
+- 状态:**8 个 C++ 源文件编译通过**(有 `.obj` 产物为证)✅
+- 未完成:`board.elf` 未用新源文件重新链接(完整构建受环境 I/O 阻塞影响)
+- **未上板验证** ⏳
+
+**依赖链(必须先解左边,右边才能做)**:
+
+```
+CubeMX 配置 TIM1/TIM10  →  生成 tim.h        →  才能启用 bsp_pwm.cpp
+CubeMX 配置 ThreadX      →  生成 tx_api.h 等  →  才能启用 BMI088.cpp,并编写 alivethread.cpp
+CubeMX 配置 I2C2/I2C3    →  生成 i2c.h        →  才能新建 bsp_i2c.cpp / IST8310
+```
+
+**待办清单**:
+
+- [ ] CubeMX 配置 TIM1(PE9,PWM Generation CH1,Prescaler=167,Period=19999 → 50 Hz 舵机 PWM)
+- [ ] CubeMX 配置 TIM10(PF6,PWM Generation CH1,Prescaler=167,Period=999 → 1 kHz 加热 PWM)
+- [ ] CubeMX 配置 I2C2(PF0/PF1)与 I2C3(PA8/PC9),100 kHz,7-bit
+- [ ] CubeMX 将 `SYS → Timebase Source` 由 **SysTick 改为 TIM6**
+      (**ThreadX 必需**:SysTick 要交给内核,否则 HAL 与内核争用同一中断)
+- [ ] CubeMX 安装 `X-CUBE-AZRTOS-F4` 的 ThreadX,`TX_TIMER_TICKS_PER_SECOND = 1000`
+- [ ] 生成后删除 `stm32f4xx_it.c` 中 CubeMX 生成的
+      `SVC_Handler` / `PendSV_Handler` / `SysTick_Handler`(ThreadX 端口已提供)
+- [ ] 新建 `board/Core/Inc/tx_user.h`,内容 `#define TX_TIMER_TICKS_PER_SECOND 1000`
+- [ ] 在 `stm32f4xx_hal_conf.h` 中取消注释
+      `HAL_I2C_MODULE_ENABLED`、`HAL_TIM_MODULE_ENABLED`
+- [ ] 中断优先级统一设为 5,勿高于内核
+      (当前 `usart.c`/`can.c` 中 USART1/6、CAN1/2_RX0 均为 0,高于 ThreadX 的 SysTick=1)
+- [ ] 恢复 `CMakeLists.txt` 中 `BMI088.cpp` 与 `bsp_pwm.cpp` 的编译
