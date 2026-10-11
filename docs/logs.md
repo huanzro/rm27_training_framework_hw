@@ -267,27 +267,93 @@ cmd /c $e.command
 - 未完成:`board.elf` 未用新源文件重新链接(完整构建受环境 I/O 阻塞影响)
 - **未上板验证** ⏳
 
-**依赖链(必须先解左边,右边才能做)**:
+---
+
+## 2026-10-11 阶段 1 完成:外设与 ThreadX 配置全部落地
+
+### 一、逐项核对结果
+
+| 项 | 结果 | 证据 |
+| --- | --- | --- |
+| **TIM1**(舵机 PWM) | ✅ | `.ioc`: `Prescaler=167`、`Period=19999`、`Channel-PWM Generation1 CH1`;`tim.c:46,48` 确认;`PE9.Signal=S_TIM1_CH1`。168 MHz/168/20000 = **50 Hz** |
+| **TIM10**(加热 PWM) | ✅(曾出错,已修) | `.ioc`: `Prescaler=167`、`Period=999`;`tim.c:104,106`;`tim.c:117,121` 为 `TIM_OCMODE_PWM1` + `HAL_TIM_PWM_ConfigChannel`。1 MHz/1000 = **1 kHz** |
+| **I2C2 / I2C3** | ✅ | `i2c.c:42`、`:71`:`ClockSpeed = 100000`、`AddressingMode = I2C_ADDRESSINGMODE_7BIT`;引脚 PF0/PF1、PA8/PC9 正确 |
+| **HAL 时基 SysTick → TIM6** | ✅ | `.ioc`: `NVIC.TimeBase=TIM6_DAC_IRQn`;CubeMX 生成 `stm32f4xx_hal_timebase_tim.c`,含完整 `HAL_InitTick`/`HAL_SuspendTick`/`HAL_ResumeTick`,`Period=(1000000/1000)-1` → 1 kHz |
+| **ThreadX** | ✅ | `board/Middlewares/ST/threadx/`(common/src 156 个 .c)、`tx_api.h`、`tx_user.h`(`TX_TIMER_TICKS_PER_SECOND 1000`)、`tx_initialize_low_level.s`(`SYSTEM_CLOCK=168000000`,`SYSTICK_CYCLES=(SYSTEM_CLOCK/1000)-1`)、`app_threadx.c`、`app_azure_rtos.c`、`RTE_Components.h` |
+| **三个冲突中断函数已删** | ✅ | `stm32f4xx_it.c` 中 `SVC_Handler`/`PendSV_Handler`/`SysTick_Handler` 均已不存在,由 `tx_initialize_low_level.s:220,630` 提供 |
+| **HAL 模块开关** | ✅ | `HAL_TIM_MODULE_ENABLED`、`HAL_I2C_MODULE_ENABLED` 均已启用 |
+| **CMake 自动接入** | ✅ | `stm32cubemx/CMakeLists.txt` 已含 `tim.c`、`i2c.c`、`stm32f4xx_hal_timebase_tim.c`、`app_threadx.c`、`app_azure_rtos.c`、`tx_initialize_low_level.s` 及 `ThreadX_Src`(156 个源文件)与两个 ThreadX 头文件目录 |
+| **main.c 初始化顺序** | ✅ | `MX_I2C2_Init` → `MX_I2C3_Init` → `MX_TIM1_Init` → `MX_TIM10_Init` → `MX_ThreadX_Init()`(第 110 行) |
+
+### 二、期间发现并修复的错误
+
+**TIM10 曾配错两处**(已修):
+
+1. `Period` 未填 → 生成成寄存器最大值 **65535**,实际频率 1 MHz/65536 = **15.26 Hz**
+   (应为 999,即 1 kHz)。判据:`.ioc` 的 `TIM10.IPParameters` 当时不含 `Period` —— 
+   **清单里没有 = 从未填过 = 用默认值**。
+2. 通道模式未选 → 生成的通道配置缺少 PWM 模式(现已为 `TIM_OCMODE_PWM1`)。
+
+**教训**:CubeMX 面板上**没填的框不会报错,而是静默取默认值**。
+TIM10 是 16 位定时器,不填 Period 就取 65535 —— 频率差 65 倍,却零警告。
+改完必须回到生成的 `.c` 里逐行核对数字。
+
+### 三、阶段 2 收尾:恢复两个源文件
+
+`tim.h` 与 `tx_api.h` 已生成,依赖满足,故恢复编译:
+
+- `../bsp/src/bsp_pwm.cpp`
+- `../modules/src/BMI088.cpp`
+
+**验证**(直接调用工具链编译,各 1.6 秒):
 
 ```
-CubeMX 配置 TIM1/TIM10  →  生成 tim.h        →  才能启用 bsp_pwm.cpp
-CubeMX 配置 ThreadX      →  生成 tx_api.h 等  →  才能启用 BMI088.cpp,并编写 alivethread.cpp
-CubeMX 配置 I2C2/I2C3    →  生成 i2c.h        →  才能新建 bsp_i2c.cpp / IST8310
+bsp_pwm.cpp   编译通过   目标文件 1123176 字节
+BMI088.cpp    编译通过   目标对象 1233276 字节
 ```
 
-**待办清单**:
+**符号级验证**(`arm-none-eabi-nm`):
 
-- [ ] CubeMX 配置 TIM1(PE9,PWM Generation CH1,Prescaler=167,Period=19999 → 50 Hz 舵机 PWM)
-- [ ] CubeMX 配置 TIM10(PF6,PWM Generation CH1,Prescaler=167,Period=999 → 1 kHz 加热 PWM)
-- [ ] CubeMX 配置 I2C2(PF0/PF1)与 I2C3(PA8/PC9),100 kHz,7-bit
-- [ ] CubeMX 将 `SYS → Timebase Source` 由 **SysTick 改为 TIM6**
-      (**ThreadX 必需**:SysTick 要交给内核,否则 HAL 与内核争用同一中断)
-- [ ] CubeMX 安装 `X-CUBE-AZRTOS-F4` 的 ThreadX,`TX_TIMER_TICKS_PER_SECOND = 1000`
-- [ ] 生成后删除 `stm32f4xx_it.c` 中 CubeMX 生成的
-      `SVC_Handler` / `PendSV_Handler` / `SysTick_Handler`(ThreadX 端口已提供)
-- [ ] 新建 `board/Core/Inc/tx_user.h`,内容 `#define TX_TIMER_TICKS_PER_SECOND 1000`
-- [ ] 在 `stm32f4xx_hal_conf.h` 中取消注释
-      `HAL_I2C_MODULE_ENABLED`、`HAL_TIM_MODULE_ENABLED`
-- [ ] 中断优先级统一设为 5,勿高于内核
-      (当前 `usart.c`/`can.c` 中 USART1/6、CAN1/2_RX0 均为 0,高于 ThreadX 的 SysTick=1)
-- [ ] 恢复 `CMakeLists.txt` 中 `BMI088.cpp` 与 `bsp_pwm.cpp` 的编译
+- `BMI088.o` 中**唯一的未定义符号**是 `U _tx_thread_sleep` —— 
+  由 ThreadX 库在链接时提供,这正是正确的中间状态(源码只引用,不需自己实现)
+- `BMI088.o` 定义了 12 个 `cBMI088::` 成员函数(`Config`、`Calibrate`、`ReadAccData`、
+  `ReadGyroData`、`ReadAccTemperature`、`VerifyAccChipID`、`VerifyGyroChipID`、
+  `TemperatureControl`、`ReadReg`、`WriteReg` 等)
+- 编译命令的 `-I` 已含 `Middlewares/ST/threadx/common/inc` 与
+  `Middlewares/ST/threadx/ports/cortex_m4/gnu/inc`
+
+**构建图规模**:总编译单元由 36 增至 **211**(ThreadX 的 156 个源文件进入);
+C++ 编译单元由 8 个增至 **10 个**。
+
+- 状态:**10 个 C++ 源文件编译通过** ✅
+- `board.elf` **仍是旧产物**(16:37,仅含 SPI 修正),尚未用新配置重新链接 ⏳
+
+### 四、仍待处理
+
+- [ ] **中断优先级**:`usart.c`、`can.c`、`dma.c` 中
+      `CAN1_RX0/CAN2_RX0/DMA2_Stream2/USART1/USART6` 仍为优先级 **0**,
+      高于 ThreadX 的 SysTick(=1)。
+      后果:① 抢占内核的节拍中断,影响线程计时;② 这些 ISR 的回调中**不允许**
+      调用 `tx_*` API,否则破坏内核就绪链表。
+      处理:CubeMX → System Core → NVIC,改为 Preemption Priority = **5**
+- [ ] **`threads/src/alivethread.cpp` 仍为 0 字节**,三个线程一个都没创建:
+      `main.c:110 MX_ThreadX_Init()` → `tx_kernel_enter()` →
+      `app_azure_rtos.c:66 tx_application_define()` →
+      `app_threadx.c:59 App_ThreadX_Init()`(内部为空)。
+      **内核会正常启动,但什么也不做,且不会报任何错。**
+      实现应放在 `App_ThreadX_Init()` 的 `USER CODE` 区内,或由
+      `threads/src/alivethread.cpp` 提供该函数
+- [ ] 完整构建验证 `board.elf` 能链接通过(受环境 I/O 阻塞影响,需耐心)
+- [ ] `bsp_spi.cpp`、`bsp_i2c.cpp`、`modules/src/LED.cpp` 尚未创建
+
+**阶段 2 待办清单(已完成项)**:
+
+- [x] CubeMX 配置 TIM1
+- [x] CubeMX 配置 TIM10(修正 Period=999 与 PWM 模式)
+- [x] CubeMX 配置 I2C2 与 I2C3
+- [x] CubeMX 将 `SYS → Timebase Source` 改为 TIM6
+- [x] CubeMX 安装 `X-CUBE-AZRTOS-F4` 的 ThreadX,tick = 1000
+- [x] 删除 `stm32f4xx_it.c` 中的 `SVC_Handler`/`PendSV_Handler`/`SysTick_Handler`
+- [x] `tx_user.h` 已生成,tick = 1000
+- [x] `HAL_I2C_MODULE_ENABLED`、`HAL_TIM_MODULE_ENABLED` 已启用
+- [x] 恢复 `CMakeLists.txt` 中 `BMI088.cpp` 与 `bsp_pwm.cpp` 的编译

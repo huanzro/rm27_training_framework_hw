@@ -51,21 +51,23 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # 注意:此处只列出当前已存在且依赖已满足的源文件。
 #
 # 以下文件【暂未纳入】,原因见 docs/logs.md:
-#   ../modules/src/BMI088.cpp —— 第 2 行 #include "tx_api.h",ThreadX 尚未通过
-#       CubeMX 安装,编译报 "fatal error: tx_api.h: No such file or directory"。
-#       待 CubeMX 配置 ThreadX 后取消下一行的注释。
-#   ../bsp/src/bsp_pwm.cpp   —— bsp_pwm.hpp 需要 "tim.h",而 TIM1/TIM10 尚未配置。
-#       待 CubeMX 配置 TIM1/TIM10 后加入。
 #   ../threads/src/alivethread.cpp —— 当前为 0 字节,尚未编写。
 #   ../bsp/src/bsp_spi.cpp / bsp_i2c.cpp / ../modules/src/LED.cpp —— 文件尚未创建。
+#
+# 历史记录(依赖已满足,已恢复):
+#   ../bsp/src/bsp_pwm.cpp —— 曾因缺少 tim.h 而排除;CubeMX 已配置 TIM1(PE9, 50Hz)
+#       与 TIM10(PF6, 1kHz)并生成 tim.c/tim.h,故恢复。
+#   ../modules/src/BMI088.cpp —— 曾因缺少 tx_api.h 而排除;CubeMX 已安装
+#       X-CUBE-AZRTOS-F4 的 ThreadX 并生成 tx_api.h,故恢复。
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ../bsp/src/bsp.cpp
     ../bsp/src/bsp_can.cpp
     ../bsp/src/bsp_usart.cpp
+    ../bsp/src/bsp_pwm.cpp
     ../libs/src/pid.cpp
     ../libs/src/math.cpp
     ../libs/src/crc.cpp
-    # ../modules/src/BMI088.cpp   # 待 ThreadX 装好后启用
+    ../modules/src/BMI088.cpp
     ../modules/src/M2006.cpp
     ../modules/src/DJIMotorHandler.cpp
 )
