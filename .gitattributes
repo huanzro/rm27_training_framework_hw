@@ -1,0 +1,32 @@
+# 行尾策略
+#
+# 本仓库 core.autocrlf=true,需要显式规定行尾,否则 git status 会产生
+# 大量"内容无差异却标记为已修改"的假修改,淹没真实改动。
+#
+# 【重要】.gitattributes 的匹配规则是"后面的覆盖前面的"。
+# 因此 "厂商目录 -text" 这一组必须写在所有通配规则(如 *.c)之后,
+# 否则会被通配规则覆盖,导致 -text 完全不生效(本文件第一版就犯了这个错)。
+
+# 默认:自动识别文本类型,统一 LF
+* text=auto eol=lf
+
+# 明确的二进制类型,禁止任何转换
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.zip    binary
+*.elf    binary
+*.bin    binary
+*.hex    binary
+*.o      binary
+*.obj    binary
+*.exe    binary
+
+# 厂商代码:一律按二进制处理,禁止行尾转换。
+# 我们永不修改这些文件,不需要 git 帮它们规范化。
+# 这一组必须在最后,才能覆盖上面的 * 与 *.c/*.h 等规则。
+board/Drivers/**      -text
+board/Middlewares/**  -text
