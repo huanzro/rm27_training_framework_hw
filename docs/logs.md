@@ -357,3 +357,145 @@ C++ 编译单元由 8 个增至 **10 个**。
 - [x] `tx_user.h` 已生成,tick = 1000
 - [x] `HAL_I2C_MODULE_ENABLED`、`HAL_TIM_MODULE_ENABLED` 已启用
 - [x] 恢复 `CMakeLists.txt` 中 `BMI088.cpp` 与 `bsp_pwm.cpp` 的编译
+
+---
+
+## 2026-10-12 阶段 0 收尾:中断优先级 + AGENTS.md
+
+### 一、中断优先级统一为 5
+
+**问题**:ThreadX 的 SysTick 优先级为 4(见下),而 5 个外设中断优先级为 0,数值更小即更高,
+会抢占内核节拍。
+
+**ThreadX SysTick 优先级的查证过程**(不靠记忆,从端口源码读出):
+
+`board/Core/Src/tx_initialize_low_level.s` GNU 段:
+
+```asm
+567:  LDR  r1, =0xFF000000     @ SVCl, ...      → SHPR2:SVCall = 0xFF(最低)
+571:  LDR  r1, =0x40FF0000     @ SysT, PnSV, Rsrv, DbgM
+572:  STR  r1, [r0, #0xD20]    @ SHPR3(系统处理程序 12-15 优先级寄存器)
+```
+
+`SHPR3` 四个字节依次为 SysTick / PendSV / (保留) / DebugMonitor,
+故 **SysTick = 0x40 → 高 4 位 = 优先级 4**;PendSV = 0xFF(最低)。
+
+**优先级分组**决定数值比较是否有效:
+`.ioc` 中 `NVIC.PriorityGroup=NVIC_PRIORITYGROUP_4` → 4 位抢占 + 0 位子优先级,
+HAL 传入的数字**直接等于**硬件优先级,不存在换算。
+
+**结论**:外设中断优先级数值必须 **> 4**。取 **5**(最小可用值)。
+
+**修改**(CubeMX → System Core → NVIC,Preemption Priority 改为 5):
+
+| 中断 | 改前 | 改后 | IRQn |
+| --- | --- | --- | --- |
+| `CAN1_RX0_IRQn` | 0 | **5** | 20 |
+| `CAN2_RX0_IRQn` | 0 | **5** | 64 |
+| `DMA2_Stream2_IRQn` | 0 | **5** | 58 |
+| `USART1_IRQn` | 0 | **5** | 37 |
+| `USART6_IRQn` | 0 | **5** | 71 |
+| `TIM6_DAC_IRQn`(HAL 时基) | 15 | 保持 15 | 54 |
+
+**验证(等级:② 编译通过,并深入到机器码)**:
+
+从 `board.elf` 反汇编 `HAL_NVIC_SetPriority` 的 5 个调用点,
+参数在寄存器 `r0`(IRQn)与 `r1`(优先级):
+
+```
+800542e:  movs r1, #5   movs r0, #20   → CAN1_RX0,  5  ✅
+80054d0:  movs r1, #5   movs r0, #64   → CAN2_RX0,  5  ✅
+8005524:  movs r1, #5   movs r0, #58   → DMA2_Str2, 5  ✅
+8005d24:  movs r1, #5   movs r0, #37   → USART1,    5  ✅
+8005d9a:  movs r1, #5   movs r0, #71   → USART6,    5  ✅
+8005f92:  ldr  r1,[r7,#4]  movs r0,#54 → TIM6,由 HAL_InitTick 传入
+```
+
+### 二、纠正一处此前不准确的表述
+
+此前记录为「在这些中断里调用 `tx_*` API 会破坏内核就绪链表」。**该说法不准确。**
+
+实测 ThreadX 源文件的编译宏:
+
+```
+-DDEBUG -DSTM32F407xx -DTX_INCLUDE_USER_DEFINE_FILE -DUSE_HAL_DRIVER
+```
+
+**没有 `-DTX_PORT_USE_BASEPRI`**。于是 `ports/cortex_m4/gnu/inc/tx_port.h` 走 `#else` 分支:
+
+```c
+536: #ifdef TX_PORT_USE_BASEPRI
+537:     MRS  %0, BASEPRI      ← 未定义,不走这里
+538: #else
+539:     MRS  %0, PRIMASK      ← 实际走这里
+556: __restore_interrupt(...)
+558: #ifdef TX_PORT_USE_BASEPRI
+562:     MSR  PRIMASK,%0
+```
+
+**临界区用 `PRIMASK`(屏蔽所有可屏蔽中断)** → 即使优先级 0 的中断调用 ThreadX API,
+也进不去临界区,不会造成共享数据竞争。
+
+**因此改优先级的真实理由是实时性,不是数据安全**:
+
+1. 优先级 0 的 ISR 抢占 SysTick → `_tx_timer_interrupt()` 被推迟 →
+   `tx_thread_sleep()` 计时偏移、线程调度抖动(CAN 在 1 Mbps 下中断频繁,抖动持续存在)
+2. CPU 正在执行优先级 0 的 ISR 时,内核置 `PRIMASK` **无法打断它** →
+   内核临界区被推迟,时延不可控
+
+另:`STMicroelectronics` 的 ThreadX 6.x 中**不存在**
+`TX_MAX_SYSCALL_INTERRUPT_PRIORITY` 这一概念(全库搜索无命中),它是 FreeRTOS 的概念,不要照搬。
+
+### 三、踩坑记录:ninja 链接在沙箱下无法写出产物
+
+**现象**:`cmake --build --preset Debug` 编译全部 211 个目标文件成功
+(`.ninja_log` 记录了 `board.elf` 的链接条目,耗时 42392 ms),
+但 `board.elf` 的时间戳**始终不变**,内容仍是旧的。
+
+**判定方法(可复用)**:ninja 在自己的日志里记录了输出文件的哈希。
+计算磁盘文件的 ninja 式哈希(整个文件 MD5 的前 8 字节按小端转十六进制后拼接)与之比对:
+
+- ninja 记录:`54af2571918ce901`
+- 磁盘实际:`240c0dcd9086818df36d931f73d30e59`
+- → **不一致,证明链接未写出产物**
+
+**处理**:绕开 ninja,直接从 `build.ninja` 提取链接变量
+(`FLAGS` / `LINK_FLAGS` / `LINK_LIBRARIES`)与 211 个 `.obj` 路径,
+写入响应文件后手工调用链接器:
+
+```
+arm-none-eabi-g++ <FLAGS> <LINK_FLAGS> @response.rsp -o board.elf
+```
+
+**结果**:**0.7 秒**完成(ninja 那次花了 42 秒却无产物)。
+说明问题出在 ninja 与沙箱的交互,而非链接本身。
+
+**产物**:
+
+```
+   text    data     bss     dec
+  25492      16    5040   30548
+
+RAM   5056 B / 128 KB = 3.86%
+FLASH 25516 B / 1 MB  = 2.43%
+```
+
+**为何 text 与改优先级前完全相同**:优先级数字以立即数形式装入寄存器
+(`movs r1, #5`),不新增代码或数据,只改变一个字节的常数 → 段大小不变。
+**所以「段大小没变」不能用来判断改动是否生效**,必须看反汇编。
+
+**待办**:完整 `cmake --build` 在本机仍不可靠(编译产物写不出/极慢)。
+在排查清楚前,如需构建可临时采用上述手工链接方式;
+优先尝试:关闭 VS Code(其 CMake Tools 会周期性重新配置)后再构建。
+
+### 四、AGENTS.md 已实现
+
+按 README 执行步骤第 4 条要求,写入:需求与理解、项目结构与依赖方向、构建约定、
+8 条硬性规则(含**验证分级**、不得编造通过结果、CubeMX 改完必须回读生成代码)、
+主机端测试范围、4 项已知隐患、以及与本文件同步的执行计划。
+
+### 五、本阶段等级
+
+- 中断优先级:**② 编译通过**,并有**机器码级证据**(反汇编确认 5 个外设均为 5)
+- 外设功能:**④ ⑤ 未验证**(无 C 板)
+- 遗留:`cmake --build` 在本机的可靠性问题(见第三节)
