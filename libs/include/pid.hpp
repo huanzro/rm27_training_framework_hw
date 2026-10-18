@@ -41,9 +41,16 @@ public:
     float maxOut;
     float maxIOut;
 
+    // new
+    float dt;          // 采样周期,单位【秒】
+    float last_fdb;    // 上一次反馈值 —— 【仅位置式的微分先行使用】
+    bool  fdbValid;    // last_fdb 是否已有效 —— 【仅位置式的微分先行使用】
+                      // 避免首拍用无意义的 last_fdb 算出巨大的假微分值
+
     PID(float kp, float ki, float kd, float maxOut, float maxIOut, int mode = PID_POSITION);
     void Tuning(float tuning_kp, float tuning_ki, float tuning_kd);
     void UpdateResult();
+    void SetDt(float period_s);//new
     void Clear();
 };
 
