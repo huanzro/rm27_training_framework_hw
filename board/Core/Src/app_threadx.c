@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "threads.hpp"       //new: 线程创建入口
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,6 +63,16 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
 
   /* USER CODE BEGIN App_ThreadX_Init */
   (void)byte_pool;
+
+  //new: 在此创建信号量与三个线程。CubeMX 已定义 tx_application_define，
+  //new: 所以线程必须由这里挂进去，不能另写一个 tx_application_define。
+  {
+    UINT st = Threads_Init();
+    if (st != TX_SUCCESS)
+    {
+      ret = st;      //new: 把真实错误码往上传，便于定位是哪个对象创建失败
+    }
+  }
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

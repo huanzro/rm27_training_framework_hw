@@ -29,7 +29,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bsp.hpp"      //new: bsp_Init()，头文件里已带 extern "C" 保护
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -104,6 +104,11 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM10_Init();
   /* USER CODE BEGIN 2 */
+
+  //new: BSP 初始化必须在内核启动前完成：此时 HAL 时基(TIM6)已在正常跑，
+  //new: 中断也未被内核接管，HAL 里的超时等待能正常工作。
+  //new: 放在 tx_kernel_enter() 之后会进 tx_application_define，那里依赖 tick 的等待不安全。
+  bsp_Init();
 
   /* USER CODE END 2 */
 
