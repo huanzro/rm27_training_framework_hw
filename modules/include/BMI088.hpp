@@ -2,6 +2,8 @@
 #define BMI088_HPP
 
 #include "IMU.hpp"
+#include "spi.h"        //new: hspi1
+#include "main.h"       //new: CS_Accel / CS_Gyro 引脚宏
 
 namespace BMI088
 {
@@ -18,7 +20,13 @@ enum BMI088_SENSOR
 };
 
 /*---------------------------硬件连接---------------------------*/
-// TODO: 配置 BMI088 使用的 SPI 句柄，以及加速度计和陀螺仪各自的 GPIO 片选端口、引脚。
+//new: BMI088 挂在 SPI1（PB3=SCK、PB4=MISO、PA7=MOSI），模式0 / 8位 / MSB先行 / 5.25MHz
+//new: 两颗传感器共用数据线，但任一时刻只能拉低其中一个片选
+#define BMI088_SPI_HANDLE   hspi1
+#define BMI088_CS_ACC_PORT  CS_Accel_GPIO_Port
+#define BMI088_CS_ACC_PIN   CS_Accel_Pin
+#define BMI088_CS_GYRO_PORT CS_Gyro_GPIO_Port
+#define BMI088_CS_GYRO_PIN  CS_Gyro_Pin
 
 #define HEATING_RESISTANCE_TIM htim10            //< 加热电阻定时器
 #define HEATING_RESISTANCE_CHANNEL TIM_CHANNEL_1 //< 加热电阻通道
@@ -211,7 +219,12 @@ enum BMI088_SENSOR
 
 
     private:
-        float Gyro_offset[3]; // 陀螺仪零飘
+        //new: 陀螺仪零偏。给默认值，避免 Config/Calibrate 之前读到未初始化的内存
+        float Gyro_offset[3] = {
+            BMI088_GYRO_PRE_CALI_OFFSET_X,
+            BMI088_GYRO_PRE_CALI_OFFSET_Y,
+            BMI088_GYRO_PRE_CALI_OFFSET_Z,
+        };
     };
 
 }

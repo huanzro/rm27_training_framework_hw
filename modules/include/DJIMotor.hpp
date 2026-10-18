@@ -62,8 +62,8 @@ public:
     uint16_t canId;                   ///< 电机的CAN通信ID
     CAN_HandleTypeDef *hcan;          ///< 指向电机使用的CAN接口的指针
 
-    PID speedPid = PID(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, PID_POSITION); ///< TODO: 配置速度环参数
-    PID positionPid = PID(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, PID_POSITION); ///< TODO: 配置位置环参数
+    PID speedPid = PID(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, PID_POSITION); ///< 速度环，参数由派生类构造函数设置
+    PID positionPid = PID(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, PID_POSITION); ///< 位置环，参数由派生类构造函数设置
 
     float speedSet;    ///< 设定的目标速度
     float positionSet; ///< 设定的目标位置，范围[-Π, Π]
@@ -71,7 +71,8 @@ public:
     int16_t currentSet;  ///< 设定的电流输出
     uint16_t maxCurrent; ///< 最大电流限制
 
-    uint32_t AliveFlag;
+    //new: AliveFlag 在 CAN 中断里自增、在线程里读，必须 volatile 才会真的每次去内存读
+    volatile uint32_t AliveFlag;
     uint32_t Pre_AliveFlag;
 
     GearBox gearBox;

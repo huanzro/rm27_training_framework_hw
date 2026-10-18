@@ -61,7 +61,9 @@ public:
     gyro_data_t gyro_data;
     imu_error_t self_test;
 
-    PID TempPid = PID(0.1f, 0.0f, 0.0f, 25000.0f, 3.0f, PID_POSITION);
+    //new: 温控 PID 输出直接当加热占空比用，所以 maxOut 必须是 1.0（不能是 25000）
+    //new: maxIOut = 0.5 限制积分，防止长时间达不到目标时积分顶满
+    PID TempPid = PID(0.05f, 0.001f, 0.0f, 1.0f, 0.5f, PID_POSITION);
     virtual ~cIMU() = default;
 
     virtual void Config() = 0;
@@ -102,13 +104,13 @@ public:
 
     /**
      * @brief 验证加速度计数据
-     * @todo 未实现
+     * @note 检查最近一次 ReadAccData 写入 acc_data 的结果：非有限值 / 三轴全零 / 超量程
      */
     virtual void VerifyAccData() = 0;
 
     /**
      * @brief 验证陀螺仪数据
-     * @todo 未实现
+     * @note 检查最近一次 ReadGyroData 写入 gyro_data 的结果：非有限值 / 超满量程
      */
     virtual void VerifyGyroData() = 0;
 };

@@ -45,11 +45,11 @@ public:
      * @param rx_data 反馈数据
      * @param index 电机索引
      */
-    void updateFeedback(CAN_HandleTypeDef *hcan, uint8_t *rx_data, int index);
+    void updateFeedback(CAN_HandleTypeDef *hcan, const uint8_t *rx_data, int index);  //new: 加 const
 
     void AllMotorAliveCheck();
 
-    void UpdateSensorData(DJIMotor *motor, uint8_t *can_receive_data);
+    void UpdateSensorData(DJIMotor *motor, const uint8_t *can_receive_data);          //new: 加 const
 
     static DJIMotorHandler *Instance()
     {
