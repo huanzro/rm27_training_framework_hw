@@ -3,6 +3,9 @@
 extern CAN_HandleTypeDef hcan1;
 extern CAN_HandleTypeDef hcan2;
 
+//new: 上层注册的接收回调
+static CAN_RxCallback s_rx_cb = nullptr;
+
 /**
  * @brief 初始化CAN滤波器配置。
  * 设置CAN硬件的滤波器，用于优化接收数据的处理。
@@ -34,6 +37,14 @@ void CAN_Init(void)
 
 void CAN_Transmit(CAN_HandleTypeDef *hcan, uint32_t Id, uint8_t *msg, uint16_t len)
 {
+    //new: 参数与状态检查。扩展帧的 ID 上限是 0x1FFFFFFF，这里只发标准帧故限 0x7FF
+    if (hcan == nullptr || msg == nullptr || len == 0 || len > 8 || Id > 0x7FF) {
+        return;
+    }
+    if (hcan->State != HAL_CAN_STATE_LISTENING) {
+        return;
+    }
+
     if (HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0)
     {
         // 如果邮箱已满，可以选择等待或者采取其他操作
@@ -41,10 +52,42 @@ void CAN_Transmit(CAN_HandleTypeDef *hcan, uint32_t Id, uint8_t *msg, uint16_t l
         // Monitor::instance()->Log_Messages(Monitor::WARNING, (uint8_t *)"CAN Tx Mailbox is full\r\n");
         return;
     }
-    // TODO: 校验标准帧 ID 和 DLC (0~8)，构造帧头并调用 HAL_CAN_AddTxMessage。
-    (void)Id;
-    (void)msg;
-    (void)len;
+
+    //new: 构造标准数据帧头并发送。DLC 就是字节数，0~8
+    CAN_TxHeaderTypeDef header = {};
+    header.StdId = Id;
+    header.IDE = CAN_ID_STD;
+    header.RTR = CAN_RTR_DATA;
+    header.DLC = len;
+
+    uint32_t mailbox = 0;
+    (void)HAL_CAN_AddTxMessage(hcan, &header, msg, &mailbox);
 }
 
-// TODO: 实现 CAN 接收回调，根据总线和标准帧 ID 分发电机反馈。
+//new: 注册接收回调
+void CAN_SetRxCallback(CAN_RxCallback cb)
+{
+    s_rx_cb = cb;
+}
+
+//new: CAN 接收回调。HAL 的弱函数，这里给出强定义。
+//new: 只转发"标准帧 + 数据帧 + 8 字节"的报文，其余丢弃。
+//new: 放在 bsp 层是为了统一校验报文格式；具体的电机解析交给上层注册的函数。
+extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+    if (hcan == nullptr || s_rx_cb == nullptr) {
+        return;
+    }
+
+    CAN_RxHeaderTypeDef header = {};
+    uint8_t bytes[8] = {};
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, bytes) != HAL_OK) {
+        return;
+    }
+
+    if (header.IDE != CAN_ID_STD || header.RTR != CAN_RTR_DATA || header.DLC != 8) {
+        return;
+    }
+
+    s_rx_cb(hcan, header.StdId, bytes, static_cast<uint8_t>(header.DLC));
+}
